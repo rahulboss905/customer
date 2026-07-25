@@ -31,7 +31,12 @@ const TOKEN = process.env.BOT_TOKEN;
 const MONGO_URI = process.env.MONGO_URI;
 const WEB_URL = process.env.WEB_URL;
 const PORT = process.env.PORT || 3000;
-const OWNER_ID = parseInt(process.env.OWNER_ID || "0");
+// OWNER_ID supports multiple comma-separated Telegram user IDs, e.g.:
+//   OWNER_ID=123456789,987654321,555555555
+// The FIRST id in the list is the "super owner" — used for the startup-required
+// check and for permissions on /addowner & /removeowner below.
+const OWNER_IDS = (process.env.OWNER_ID || "").split(",").map(s => parseInt(s.trim(), 10)).filter(Boolean);
+const OWNER_ID = OWNER_IDS[0] || 0; // super owner — kept for backward compat with existing code below
 const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID ? parseInt(process.env.STORAGE_CHANNEL_ID) : null;
 const UPI_ID = process.env.UPI_ID || "";
 const UPI_NAME = process.env.UPI_NAME || ""; // payee name shown in the UPI app (pn= param) — set this in env, else falls back to a generic name
@@ -44,7 +49,28 @@ let bot = null;
 if (!TOKEN || !MONGO_URI || !WEB_URL || !OWNER_ID) { console.error("Missing env: BOT_TOKEN, MONGO_URI, WEB_URL, OWNER_ID are required."); process.exit(1); }
 if (!STORAGE_CHANNEL_ID) console.warn("Warning: STORAGE_CHANNEL_ID not set.");
 
-function isOwner(userId) { return userId === OWNER_ID; }
+// ── Multi-owner support ───────────────────────────────────────────────────────
+// OWNER_ID (from env) is the permanent "super owner" — it can never be removed
+// and is the only one allowed to add/remove other owners. Extra owners are
+// persisted to disk (data/owners.json) so they survive restarts, unlike an
+// in-memory-only list.
+const OWNERS_FILE = path.join(__dirname, "data", "owners.json");
+function loadExtraOwners() {
+  try {
+    if (!fs.existsSync(OWNERS_FILE)) return new Set();
+    const arr = JSON.parse(fs.readFileSync(OWNERS_FILE, "utf8"));
+    return new Set(Array.isArray(arr) ? arr.map(Number).filter(Boolean) : []);
+  } catch (e) { console.warn("Could not read data/owners.json, starting with no extra owners:", e.message); return new Set(); }
+}
+function saveExtraOwners() {
+  try {
+    fs.mkdirSync(path.dirname(OWNERS_FILE), { recursive: true });
+    fs.writeFileSync(OWNERS_FILE, JSON.stringify([...extraOwners], null, 2));
+  } catch (e) { console.error("Could not save data/owners.json:", e.message); }
+}
+const extraOwners = loadExtraOwners();
+function isSuperOwner(userId) { return userId === OWNER_ID; }
+function isOwner(userId) { return OWNER_IDS.includes(userId) || extraOwners.has(userId); }
 function isGroupChat(msg) { return msg.chat && (msg.chat.type === "group" || msg.chat.type === "supergroup"); }
 
 // ── MongoDB Schemas (for backup writes only) ──────────────────────────────────
@@ -262,7 +288,7 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.get("/health", (req, res) => res.json({ status: "ok", uptime: process.uptime(), mongo: mongoose.connection.readyState===1?"connected":"disconnected", sqlite: "active" }));
 app.get("/api/config", (req, res) => {
   const fj = (process.env.FORCE_JOIN_CHANNELS||"").split(",").map(s=>s.trim()).filter(Boolean);
-  res.json({ ownerId: OWNER_ID, botUsername: BOT_USERNAME||"", forceJoinRequired: fj.length>0, upiId: UPI_ID||"", upiName: UPI_NAME||"", contactLink: CONTACT_LINK||`https://t.me/${BOT_USERNAME}` });
+  res.json({ ownerId: OWNER_ID, ownerIds: [...new Set([...OWNER_IDS, ...extraOwners])], botUsername: BOT_USERNAME||"", forceJoinRequired: fj.length>0, upiId: UPI_ID||"", upiName: UPI_NAME||"", contactLink: CONTACT_LINK||`https://t.me/${BOT_USERNAME}` });
 });
 
 // Generates the payment UPI QR server-side (so it's a real, shareable/downloadable HTTPS
@@ -461,7 +487,7 @@ async function startBot() {
     const referLink = userId ? `https://t.me/${BOT_USERNAME}?start=ref_${userId}` : "";
     const referLinkCode = referLink ? `<code>${referLink}</code>` : "";
     const welcomeText = isOwner(userId)
-      ? `👋 Hello Admin!\n\nTap below to browse lectures! 📚\n\n📁 File Store:\n/bulk — bulk upload\n/myfiles — view files\n/delete &lt;code&gt; — delete file\n/rmword 'word' — remove word from names\n/cancel — cancel bulk\n\n📡 Broadcast:\n/broadcast &lt;text&gt; or reply to media\n\n🔗 <b>Your Invite Link:</b> (tap to copy)\n${referLinkCode}`
+      ? `👋 Hello Admin!\n\nTap below to browse lectures! 📚\n\n📁 File Store:\n/bulk — bulk upload\n/myfiles — view files\n/delete &lt;code&gt; — delete file\n/rmword 'word' — remove word from names\n/cancel — cancel bulk\n\n📡 Broadcast:\n/broadcast &lt;text&gt; or reply to media\n\n👑 Owners${isSuperOwner(userId) ? ` (super owner only for add/remove)` : ``}:\n/owners — list owners${isSuperOwner(userId) ? `\n/addowner &lt;user_id&gt; — grant owner access\n/removeowner &lt;user_id&gt; — revoke owner access` : ``}\n\n🔗 <b>Your Invite Link:</b> (tap to copy)\n${referLinkCode}`
       : `👋 Hello ${msg.from.first_name}!\n\nTap below to browse all lectures! 📚\n\n🔗 <b>Your Invite Link:</b> (tap to copy)\n${referLinkCode}\n\nShare karo aur har referral pe <b>5 points</b> kamao! 🎁`;
     const shareUrl = referLink ? `https://t.me/share/url?url=${encodeURIComponent(referLink)}&text=${encodeURIComponent("Join and get free lectures! 📚")}` : "";
     const startButtons = [[{ text:"📚 Browse Lectures", web_app:{ url:WEB_URL } }]];
@@ -540,6 +566,42 @@ async function startBot() {
     } catch(err){console.error("myfiles error:",err.message);bot.sendMessage(chatId,`Error occurred.`);}
   }
   bot.onText(/\/myfiles/, async (msg) => { if(isGroupChat(msg)||!isOwner(msg.from?.id)) return; await sendMyFilesPage(msg.chat.id,msg.from.id,0); });
+
+  // ── /addowner, /removeowner, /owners ─────────────────────────────────────
+  // Only the super owner (OWNER_ID from env) can grant/revoke owner access —
+  // otherwise any added owner could add unlimited more owners on their own.
+  bot.onText(/\/addowner(?:\s+(\S+))?/, async (msg, match) => {
+    if (isGroupChat(msg) || !isSuperOwner(msg.from?.id)) return;
+    const chatId = msg.chat.id;
+    const targetId = match[1] ? parseInt(match[1], 10) : msg.reply_to_message?.from?.id;
+    if (!targetId) return bot.sendMessage(chatId, `❌ Usage: /addowner <user_id>\nOr reply to that user's message with /addowner`);
+    if (targetId === OWNER_ID) return bot.sendMessage(chatId, `⚠️ That user is already the super owner.`);
+    if (extraOwners.has(targetId)) return bot.sendMessage(chatId, `⚠️ <code>${targetId}</code> is already an owner.`, { parse_mode: "HTML" });
+    extraOwners.add(targetId); saveExtraOwners();
+    bot.sendMessage(chatId, `✅ Added <code>${targetId}</code> as an owner.`, { parse_mode: "HTML" });
+    bot.sendMessage(targetId, `🎉 You've been made a bot owner!`).catch(() => {});
+  });
+
+  bot.onText(/\/removeowner(?:\s+(\S+))?/, async (msg, match) => {
+    if (isGroupChat(msg) || !isSuperOwner(msg.from?.id)) return;
+    const chatId = msg.chat.id;
+    const targetId = match[1] ? parseInt(match[1], 10) : msg.reply_to_message?.from?.id;
+    if (!targetId) return bot.sendMessage(chatId, `❌ Usage: /removeowner <user_id>\nOr reply to that user's message with /removeowner`);
+    if (targetId === OWNER_ID) return bot.sendMessage(chatId, `❌ Cannot remove the super owner.`);
+    if (!extraOwners.has(targetId)) return bot.sendMessage(chatId, `⚠️ <code>${targetId}</code> is not an owner.`, { parse_mode: "HTML" });
+    extraOwners.delete(targetId); saveExtraOwners();
+    bot.sendMessage(chatId, `✅ Removed <code>${targetId}</code> from owners.`, { parse_mode: "HTML" });
+  });
+
+  bot.onText(/\/owners/, async (msg) => {
+    if (isGroupChat(msg) || !isOwner(msg.from?.id)) return;
+    const chatId = msg.chat.id;
+    const list = [
+      ...OWNER_IDS.map((id, i) => i === 0 ? `👑 <code>${id}</code> — Super Owner (env)` : `👤 <code>${id}</code> — Owner (env)`),
+      ...[...extraOwners].map(id => `👤 <code>${id}</code> — Owner (added)`)
+    ];
+    bot.sendMessage(chatId, `<b>Owners:</b>\n\n${list.join("\n")}`, { parse_mode: "HTML" });
+  });
 
   // ── Callback queries ──────────────────────────────────────────────────────
   bot.on("callback_query", async (query) => {
