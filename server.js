@@ -49,28 +49,57 @@ let bot = null;
 if (!TOKEN || !MONGO_URI || !WEB_URL || !OWNER_ID) { console.error("Missing env: BOT_TOKEN, MONGO_URI, WEB_URL, OWNER_ID are required."); process.exit(1); }
 if (!STORAGE_CHANNEL_ID) console.warn("Warning: STORAGE_CHANNEL_ID not set.");
 
-// ── Multi-owner support ───────────────────────────────────────────────────────
-// OWNER_ID (from env) is the permanent "super owner" — it can never be removed
-// and is the only one allowed to add/remove other owners. Extra owners are
-// persisted to disk (data/owners.json) so they survive restarts, unlike an
-// in-memory-only list.
+// ── Multi-owner support with per-owner power control ─────────────────────────
+// OWNER_ID (first id in the env OWNER_ID list) is the permanent "super owner" —
+// it always has full power and is the only one allowed to add/remove owners or
+// change their powers. Every other owner (whether from the env list or added
+// via /addowner) can have three individual powers toggled on/off via /owners:
+//   - forwardBypass: skip forward/save protection when receiving files
+//   - adminPanel:    show the Admin button/panel in the Telegram Mini App
+//   - broadcast:     allowed to use /broadcast
+// New owners default to full power (all true) until explicitly restricted.
+// Everything is persisted to disk (data/owners.json) so it survives restarts.
 const OWNERS_FILE = path.join(__dirname, "data", "owners.json");
-function loadExtraOwners() {
+const OWNER_PERMS = ["forwardBypass", "adminPanel", "broadcast", "approvePayment"];
+function loadOwnersData() {
   try {
-    if (!fs.existsSync(OWNERS_FILE)) return new Set();
-    const arr = JSON.parse(fs.readFileSync(OWNERS_FILE, "utf8"));
-    return new Set(Array.isArray(arr) ? arr.map(Number).filter(Boolean) : []);
-  } catch (e) { console.warn("Could not read data/owners.json, starting with no extra owners:", e.message); return new Set(); }
+    if (!fs.existsSync(OWNERS_FILE)) return {};
+    const obj = JSON.parse(fs.readFileSync(OWNERS_FILE, "utf8"));
+    return (obj && typeof obj === "object" && !Array.isArray(obj)) ? obj : {};
+  } catch (e) { console.warn("Could not read data/owners.json, starting fresh:", e.message); return {}; }
 }
-function saveExtraOwners() {
+function saveOwnersData() {
   try {
     fs.mkdirSync(path.dirname(OWNERS_FILE), { recursive: true });
-    fs.writeFileSync(OWNERS_FILE, JSON.stringify([...extraOwners], null, 2));
+    fs.writeFileSync(OWNERS_FILE, JSON.stringify(ownersData, null, 2));
   } catch (e) { console.error("Could not save data/owners.json:", e.message); }
 }
-const extraOwners = loadExtraOwners();
+const ownersData = loadOwnersData(); // { "<userId>": { forwardBypass, adminPanel, broadcast } } — only for non-super owners
 function isSuperOwner(userId) { return userId === OWNER_ID; }
-function isOwner(userId) { return OWNER_IDS.includes(userId) || extraOwners.has(userId); }
+function isOwner(userId) { return OWNER_IDS.includes(userId) || Object.prototype.hasOwnProperty.call(ownersData, String(userId)); }
+// hasPerm: super owner always full power; any other owner defaults to full
+// power until a specific permission is explicitly set to false.
+function hasPerm(userId, perm) {
+  if (isSuperOwner(userId)) return true;
+  if (!isOwner(userId)) return false;
+  const rec = ownersData[String(userId)];
+  return !rec || rec[perm] !== false;
+}
+function setPerm(userId, perm, value) {
+  const key = String(userId);
+  if (!ownersData[key]) ownersData[key] = {};
+  ownersData[key][perm] = value;
+  saveOwnersData();
+}
+function ensureOwnerRecord(userId) {
+  const key = String(userId);
+  if (!ownersData[key]) { ownersData[key] = {}; saveOwnersData(); }
+}
+// All manageable owners (excludes the super owner, who is always full power and not listed for editing)
+function listManageableOwners() {
+  const ids = new Set([...OWNER_IDS.filter((id) => id !== OWNER_ID), ...Object.keys(ownersData).map(Number)]);
+  return [...ids];
+}
 function isGroupChat(msg) { return msg.chat && (msg.chat.type === "group" || msg.chat.type === "supergroup"); }
 
 // ── MongoDB Schemas (for backup writes only) ──────────────────────────────────
@@ -170,7 +199,7 @@ async function sendFile(bot, chatId, record) {
   // Forward-restriction (protect_content) should only apply to videos — other file types
   // (photo, audio, voice, document) must stay freely forwardable even for non-owners.
   const isVideoType = record.file_type === "video" || record.file_type === "video_note";
-  const protect = isVideoType && !isOwner(chatId);
+  const protect = isVideoType && !hasPerm(chatId, "forwardBypass");
   try {
     switch(record.file_type) {
       case "photo":      return await bot.sendPhoto(chatId, record.file_id, { caption, protect_content: protect });
@@ -288,7 +317,8 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.get("/health", (req, res) => res.json({ status: "ok", uptime: process.uptime(), mongo: mongoose.connection.readyState===1?"connected":"disconnected", sqlite: "active" }));
 app.get("/api/config", (req, res) => {
   const fj = (process.env.FORCE_JOIN_CHANNELS||"").split(",").map(s=>s.trim()).filter(Boolean);
-  res.json({ ownerId: OWNER_ID, ownerIds: [...new Set([...OWNER_IDS, ...extraOwners])], botUsername: BOT_USERNAME||"", forceJoinRequired: fj.length>0, upiId: UPI_ID||"", upiName: UPI_NAME||"", contactLink: CONTACT_LINK||`https://t.me/${BOT_USERNAME}` });
+  const adminPanelOwnerIds = [...new Set([...OWNER_IDS, ...listManageableOwners()])].filter((id) => hasPerm(id, "adminPanel"));
+  res.json({ ownerId: OWNER_ID, ownerIds: adminPanelOwnerIds, botUsername: BOT_USERNAME||"", forceJoinRequired: fj.length>0, upiId: UPI_ID||"", upiName: UPI_NAME||"", contactLink: CONTACT_LINK||`https://t.me/${BOT_USERNAME}` });
 });
 
 // Generates the payment UPI QR server-side (so it's a real, shareable/downloadable HTTPS
@@ -487,7 +517,7 @@ async function startBot() {
     const referLink = userId ? `https://t.me/${BOT_USERNAME}?start=ref_${userId}` : "";
     const referLinkCode = referLink ? `<code>${referLink}</code>` : "";
     const welcomeText = isOwner(userId)
-      ? `👋 Hello Admin!\n\nTap below to browse lectures! 📚\n\n📁 File Store:\n/bulk — bulk upload\n/myfiles — view files\n/delete &lt;code&gt; — delete file\n/rmword 'word' — remove word from names\n/cancel — cancel bulk\n\n📡 Broadcast:\n/broadcast &lt;text&gt; or reply to media\n\n👑 Owners${isSuperOwner(userId) ? ` (super owner only for add/remove)` : ``}:\n/owners — list owners${isSuperOwner(userId) ? `\n/addowner &lt;user_id&gt; — grant owner access\n/removeowner &lt;user_id&gt; — revoke owner access` : ``}\n\n🔗 <b>Your Invite Link:</b> (tap to copy)\n${referLinkCode}`
+      ? `👋 Hello Admin!\n\nTap below to browse lectures! 📚\n\n📁 File Store:\n/bulk — bulk upload\n/myfiles — view files\n/delete &lt;code&gt; — delete file\n/rmword 'word' — remove word from names\n/cancel — cancel bulk\n\n📡 Broadcast:\n/broadcast &lt;text&gt; or reply to media${isSuperOwner(userId) ? `\n\n👑 Owner Management (super owner only):\n/addowner &lt;user_id&gt; — grant owner access\n/removeowner &lt;user_id&gt; — revoke owner access\n/owners — open the power-control catalog (toggle forward-bypass, admin panel, broadcast per owner)` : ``}\n\n🔗 <b>Your Invite Link:</b> (tap to copy)\n${referLinkCode}`
       : `👋 Hello ${msg.from.first_name}!\n\nTap below to browse all lectures! 📚\n\n🔗 <b>Your Invite Link:</b> (tap to copy)\n${referLinkCode}\n\nShare karo aur har referral pe <b>5 points</b> kamao! 🎁`;
     const shareUrl = referLink ? `https://t.me/share/url?url=${encodeURIComponent(referLink)}&text=${encodeURIComponent("Join and get free lectures! 📚")}` : "";
     const startButtons = [[{ text:"📚 Browse Lectures", web_app:{ url:WEB_URL } }]];
@@ -567,18 +597,58 @@ async function startBot() {
   }
   bot.onText(/\/myfiles/, async (msg) => { if(isGroupChat(msg)||!isOwner(msg.from?.id)) return; await sendMyFilesPage(msg.chat.id,msg.from.id,0); });
 
-  // ── /addowner, /removeowner, /owners ─────────────────────────────────────
-  // Only the super owner (OWNER_ID from env) can grant/revoke owner access —
-  // otherwise any added owner could add unlimited more owners on their own.
+  // ── /addowner, /removeowner, /owners (with per-owner power control) ───────
+  // Only the super owner (OWNER_ID — first id in the env OWNER_ID list) can
+  // grant/revoke owner access or change anyone's powers — otherwise an owner
+  // could grant itself unlimited access.
+  const ownerNameCache = {};
+  async function getOwnerLabel(id) {
+    if (ownerNameCache[id]) return ownerNameCache[id];
+    try {
+      const chat = await bot.getChat(id);
+      const name = [chat.first_name, chat.last_name].filter(Boolean).join(" ") || (chat.username ? "@"+chat.username : String(id));
+      ownerNameCache[id] = name;
+      return name;
+    } catch (_) { return String(id); }
+  }
+  const PERM_LABELS = { forwardBypass: "🚫 Forward Restriction Bypass", adminPanel: "🛠 Admin Panel Access", broadcast: "📡 Broadcast Access", approvePayment: "💳 Approve/Reject Payments" };
+
+  async function sendOwnerCatalog(chatId, editMsgId) {
+    const ids = listManageableOwners();
+    if (!ids.length) {
+      const text = `👑 <b>Owners</b>\n\nAbhi koi extra owner nahi hai.\nUse <code>/addowner &lt;user_id&gt;</code> (or reply to their message) to add one.`;
+      if (editMsgId) return bot.editMessageText(text, { chat_id: chatId, message_id: editMsgId, parse_mode: "HTML" }).catch(() => {});
+      return bot.sendMessage(chatId, text, { parse_mode: "HTML" });
+    }
+    const labels = await Promise.all(ids.map((id) => getOwnerLabel(id)));
+    const kb = { inline_keyboard: ids.map((id, i) => [{ text: `👤 ${labels[i]} (${id})`, callback_data: `own_view_${id}` }]) };
+    const text = `👑 <b>Manage Owners</b>\n\nTap an owner to view & toggle their powers:`;
+    if (editMsgId) return bot.editMessageText(text, { chat_id: chatId, message_id: editMsgId, parse_mode: "HTML", reply_markup: kb }).catch(() => {});
+    return bot.sendMessage(chatId, text, { parse_mode: "HTML", reply_markup: kb });
+  }
+
+  async function sendOwnerPowerView(chatId, targetId, editMsgId) {
+    const label = await getOwnerLabel(targetId);
+    const isEnvOwner = OWNER_IDS.includes(targetId);
+    const rows = OWNER_PERMS.map((perm) => {
+      const on = hasPerm(targetId, perm);
+      return [{ text: `${on ? "✅" : "❌"} ${PERM_LABELS[perm]}`, callback_data: `own_toggle_${perm}_${targetId}` }];
+    });
+    if (!isEnvOwner) rows.push([{ text: "🗑 Remove Owner", callback_data: `own_remove_${targetId}` }]);
+    rows.push([{ text: "⬅️ Back", callback_data: "own_back" }]);
+    const text = `👤 <b>${esc(label)}</b>\n<code>${targetId}</code>${isEnvOwner ? `\n<i>(env owner — stays an owner even if removed here)</i>` : ``}\n\nTap a power to turn it on/off:`;
+    return bot.editMessageText(text, { chat_id: chatId, message_id: editMsgId, parse_mode: "HTML", reply_markup: { inline_keyboard: rows } }).catch(() => {});
+  }
+
   bot.onText(/\/addowner(?:\s+(\S+))?/, async (msg, match) => {
     if (isGroupChat(msg) || !isSuperOwner(msg.from?.id)) return;
     const chatId = msg.chat.id;
     const targetId = match[1] ? parseInt(match[1], 10) : msg.reply_to_message?.from?.id;
     if (!targetId) return bot.sendMessage(chatId, `❌ Usage: /addowner <user_id>\nOr reply to that user's message with /addowner`);
     if (targetId === OWNER_ID) return bot.sendMessage(chatId, `⚠️ That user is already the super owner.`);
-    if (extraOwners.has(targetId)) return bot.sendMessage(chatId, `⚠️ <code>${targetId}</code> is already an owner.`, { parse_mode: "HTML" });
-    extraOwners.add(targetId); saveExtraOwners();
-    bot.sendMessage(chatId, `✅ Added <code>${targetId}</code> as an owner.`, { parse_mode: "HTML" });
+    if (isOwner(targetId)) return bot.sendMessage(chatId, `⚠️ <code>${targetId}</code> is already an owner.`, { parse_mode: "HTML" });
+    ensureOwnerRecord(targetId);
+    bot.sendMessage(chatId, `✅ Added <code>${targetId}</code> as an owner with full power (forward bypass, admin panel, broadcast).\n\nUse /owners to fine-tune their powers.`, { parse_mode: "HTML" });
     bot.sendMessage(targetId, `🎉 You've been made a bot owner!`).catch(() => {});
   });
 
@@ -588,19 +658,15 @@ async function startBot() {
     const targetId = match[1] ? parseInt(match[1], 10) : msg.reply_to_message?.from?.id;
     if (!targetId) return bot.sendMessage(chatId, `❌ Usage: /removeowner <user_id>\nOr reply to that user's message with /removeowner`);
     if (targetId === OWNER_ID) return bot.sendMessage(chatId, `❌ Cannot remove the super owner.`);
-    if (!extraOwners.has(targetId)) return bot.sendMessage(chatId, `⚠️ <code>${targetId}</code> is not an owner.`, { parse_mode: "HTML" });
-    extraOwners.delete(targetId); saveExtraOwners();
+    if (OWNER_IDS.includes(targetId)) return bot.sendMessage(chatId, `❌ <code>${targetId}</code> is set via the OWNER_ID env variable — remove it there instead (bot restart needed).`, { parse_mode: "HTML" });
+    if (!Object.prototype.hasOwnProperty.call(ownersData, String(targetId))) return bot.sendMessage(chatId, `⚠️ <code>${targetId}</code> is not an owner.`, { parse_mode: "HTML" });
+    delete ownersData[String(targetId)]; saveOwnersData();
     bot.sendMessage(chatId, `✅ Removed <code>${targetId}</code> from owners.`, { parse_mode: "HTML" });
   });
 
   bot.onText(/\/owners/, async (msg) => {
-    if (isGroupChat(msg) || !isOwner(msg.from?.id)) return;
-    const chatId = msg.chat.id;
-    const list = [
-      ...OWNER_IDS.map((id, i) => i === 0 ? `👑 <code>${id}</code> — Super Owner (env)` : `👤 <code>${id}</code> — Owner (env)`),
-      ...[...extraOwners].map(id => `👤 <code>${id}</code> — Owner (added)`)
-    ];
-    bot.sendMessage(chatId, `<b>Owners:</b>\n\n${list.join("\n")}`, { parse_mode: "HTML" });
+    if (isGroupChat(msg) || !isSuperOwner(msg.from?.id)) return;
+    await sendOwnerCatalog(msg.chat.id);
   });
 
   // ── Callback queries ──────────────────────────────────────────────────────
@@ -608,6 +674,7 @@ async function startBot() {
     const userId=query.from?.id; const data=query.data||""; const chatId=query.message?.chat?.id; const msgId=query.message?.message_id;
     if (data.startsWith("pay_approve_")||data.startsWith("pay_reject_")) {
       if (!isOwner(userId)) return bot.answerCallbackQuery(query.id,{text:"❌ Not authorized"});
+      if (!hasPerm(userId,"approvePayment")) return bot.answerCallbackQuery(query.id,{text:"❌ You don't have payment-approval permission."});
       const isApprove=data.startsWith("pay_approve_");
       const parts=data.replace("pay_approve_","").replace("pay_reject_","").split("_");
       const batchId=parts[0]; const targetUserId=parts[1];
@@ -630,6 +697,39 @@ async function startBot() {
     if(query.message&&isGroupChat(query.message)) return bot.answerCallbackQuery(query.id);
     if(!isOwner(userId)) return bot.answerCallbackQuery(query.id);
     if(data.startsWith("myfiles_page_")){const page=parseInt(data.replace("myfiles_page_",""),10);await sendMyFilesPage(query.message.chat.id,userId,page,msgId);await bot.answerCallbackQuery(query.id);}
+
+    if (data.startsWith("own_")) {
+      // Power-management catalog is super-owner-only, re-checked here since
+      // callback buttons can be tapped independently of the original command.
+      if (!isSuperOwner(userId)) return bot.answerCallbackQuery(query.id, { text: "❌ Only the super owner can manage owners." });
+      if (data === "own_back") {
+        await sendOwnerCatalog(chatId, msgId);
+        return bot.answerCallbackQuery(query.id);
+      }
+      if (data.startsWith("own_view_")) {
+        const targetId = parseInt(data.replace("own_view_", ""), 10);
+        await sendOwnerPowerView(chatId, targetId, msgId);
+        return bot.answerCallbackQuery(query.id);
+      }
+      if (data.startsWith("own_toggle_")) {
+        const rest = data.replace("own_toggle_", "");
+        const perm = OWNER_PERMS.find((p) => rest.startsWith(p + "_"));
+        if (!perm) return bot.answerCallbackQuery(query.id, { text: "❌ Unknown power" });
+        const targetId = parseInt(rest.replace(perm + "_", ""), 10);
+        if (OWNER_IDS.includes(targetId) && targetId === OWNER_ID) return bot.answerCallbackQuery(query.id, { text: "❌ Can't restrict the super owner." });
+        setPerm(targetId, perm, !hasPerm(targetId, perm));
+        await sendOwnerPowerView(chatId, targetId, msgId);
+        return bot.answerCallbackQuery(query.id, { text: "✅ Updated" });
+      }
+      if (data.startsWith("own_remove_")) {
+        const targetId = parseInt(data.replace("own_remove_", ""), 10);
+        if (OWNER_IDS.includes(targetId)) return bot.answerCallbackQuery(query.id, { text: "❌ Env owner — edit OWNER_ID env var instead." });
+        delete ownersData[String(targetId)]; saveOwnersData();
+        await sendOwnerCatalog(chatId, msgId);
+        return bot.answerCallbackQuery(query.id, { text: "✅ Removed" });
+      }
+      return bot.answerCallbackQuery(query.id);
+    }
   });
 
   // ── /delete ───────────────────────────────────────────────────────────────
@@ -878,6 +978,7 @@ async function startBot() {
   // ── /broadcast ────────────────────────────────────────────────────────────
   bot.onText(/\/broadcast(.*)/, async (msg,match) => {
     if(isGroupChat(msg)||!isOwner(msg.from?.id)) return;
+    if(!hasPerm(msg.from?.id,"broadcast")) return bot.sendMessage(msg.chat.id,`❌ You don't have broadcast permission.`);
     const chatId=msg.chat.id; const argRaw=(match[1]||"").trim();
     const pinFlag=argRaw.includes("--pin"); const forwardFlag=argRaw.includes("--f");
     const inlineText=argRaw.replace("--pin","").replace("--f","").trim();
