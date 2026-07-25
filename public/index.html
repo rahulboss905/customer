@@ -2036,16 +2036,17 @@ async function checkAdminAccess() {
   try {
     var config = await (await fetch('/api/config')).json();
     var ownerId = config.ownerId;
+    var ownerIds = Array.isArray(config.ownerIds) ? config.ownerIds : (ownerId ? [ownerId] : []);
     if (config.botUsername) window._botUsername = config.botUsername;
     if (config.upiId) window._upiId = config.upiId;
     if (config.upiName) window._upiName = config.upiName;
     if (config.contactLink) window._contactLink = config.contactLink;
     // Store force-join requirement
     _fjRequired = !!config.forceJoinRequired;
-    if (!ownerId) return;
+    if (!ownerIds.length) return;
     var tgUser = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
     var curId = tgUser ? tgUser.id : null;
-    if (curId && curId === ownerId) { isAdmin = true; document.getElementById('adminBtn').classList.add('visible'); }
+    if (curId && ownerIds.includes(curId)) { isAdmin = true; document.getElementById('adminBtn').classList.add('visible'); }
   } catch(e) {}
 }
 
