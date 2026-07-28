@@ -1,12 +1,37 @@
 const express = require("express");
 const router = express.Router();
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 const mongoose = require("mongoose");
 const Batch = require("../models/Course");
 const db = require("../sqlite-manager");
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const OWNER_ID = parseInt(process.env.OWNER_ID || "0");
+// Support the same multi-owner setup as server.js: OWNER_ID env can be a
+// comma-separated list, and additional owners can be granted access via
+// /addowner (persisted in data/owners.json with per-permission toggles).
+const OWNER_IDS = (process.env.OWNER_ID || "").split(",").map(s => parseInt(s.trim(), 10)).filter(Boolean);
+const OWNER_ID = OWNER_IDS[0] || 0; // super owner — kept for backward compat
+
+const OWNERS_FILE = path.join(__dirname, "..", "data", "owners.json");
+function loadOwnersData() {
+  try {
+    if (!fs.existsSync(OWNERS_FILE)) return {};
+    return JSON.parse(fs.readFileSync(OWNERS_FILE, "utf8"));
+  } catch (e) { return {}; }
+}
+
+// Checks whether a user is allowed to use the web-app admin panel:
+// - the super owner or any env-listed owner always passes
+// - an /addowner-added owner passes only if their "adminPanel" power is on
+function hasAdminPanelAccess(userId) {
+  if (OWNER_IDS.includes(userId)) return true;
+  const ownersData = loadOwnersData();
+  const entry = ownersData[String(userId)];
+  if (!entry) return false;
+  return entry.adminPanel !== false; // defaults to true, same as server.js
+}
 
 // ── Admin verification ────────────────────────────────────────────────────────
 function verifyAdmin(req, res, next) {
@@ -21,7 +46,7 @@ function verifyAdmin(req, res, next) {
     const expectedHash = crypto.createHmac("sha256", secretKey).update(dataCheckString).digest("hex");
     if (expectedHash !== hash) return res.status(401).json({ error: "Invalid signature" });
     const user = JSON.parse(params.get("user") || "{}");
-    if (user.id !== OWNER_ID) return res.status(403).json({ error: "Forbidden" });
+    if (!hasAdminPanelAccess(user.id)) return res.status(403).json({ error: "Forbidden" });
     next();
   } catch (e) { return res.status(401).json({ error: "Verification failed" }); }
 }
@@ -38,7 +63,7 @@ function isAdminRequest(req) {
     const expectedHash = crypto.createHmac("sha256", secretKey).update(dataCheckString).digest("hex");
     if (expectedHash !== hash) return false;
     const user = JSON.parse(params.get("user") || "{}");
-    return user.id === OWNER_ID;
+    return hasAdminPanelAccess(user.id);
   } catch (e) { return false; }
 }
 
