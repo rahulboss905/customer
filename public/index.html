@@ -107,7 +107,7 @@ body{position:fixed;inset:0;overflow:hidden;background:var(--bg);color:var(--tex
 body.fadein{transition:none}
 body.ready{transition:none}
 
-.page{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;transform:translateX(100%);transition:transform 0.28s cubic-bezier(.4,0,.2,1);z-index:10;overflow:hidden;will-change:transform;backface-visibility:hidden;-webkit-backface-visibility:hidden}
+.page{position:fixed;inset:0;max-width:480px;margin:0 auto;background:var(--bg);display:flex;flex-direction:column;transform:translateX(100%);transition:transform 0.28s cubic-bezier(.4,0,.2,1);z-index:10;overflow:hidden;will-change:transform;backface-visibility:hidden;-webkit-backface-visibility:hidden}
 .page.active{transform:translateX(0);z-index:11}
 .page.prev{transform:translateX(-25%)}
 
@@ -210,7 +210,11 @@ body.ready{transition:none}
 .demo-modal-close{background:var(--surface2);border:none;color:var(--text2);width:30px;height:30px;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px}
 .demo-badge{display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:2px 7px;letter-spacing:0.3px}
 .premium-lock-overlay{position:absolute;inset:0;background:rgba(10,14,26,0.55);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;z-index:5;border-radius:0}
-.premium-badge{position:absolute;top:6px;right:6px;background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;font-size:9px;font-weight:800;padding:3px 7px;border-radius:20px;letter-spacing:0.5px;z-index:6;display:flex;align-items:center;gap:3px}
+.premium-badge{position:absolute;top:38px;right:6px;background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;font-size:9px;font-weight:800;padding:3px 7px;border-radius:20px;letter-spacing:0.5px;z-index:6;display:flex;align-items:center;gap:3px}
+.fav-heart-btn{position:absolute;top:6px;right:6px;width:28px;height:28px;border-radius:50%;background:rgba(10,14,26,0.55);backdrop-filter:blur(2px);border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:7;transition:transform 0.15s;-webkit-tap-highlight-color:transparent;padding:0}
+.fav-heart-btn:active{transform:scale(0.85)}
+.fav-heart-btn i{font-size:15px;color:#fff;transition:color 0.15s}
+.fav-heart-btn.active i{color:#ef4444}
 .premium-locked-msg{position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,0.85));padding:8px 10px 6px;z-index:6}
 .premium-locked-text{font-size:10px;font-weight:600;color:#f59e0b;text-align:center}
 
@@ -427,7 +431,7 @@ body.ready{transition:none}
   <div class="vs-bar"><div class="vs-fill" id="vsFill"></div></div>
   <div style="margin-top:32px;text-align:center">
     <div style="font-size:11px;color:var(--text3);margin-bottom:10px">Having trouble? Contact us</div>
-    <button onclick="var _cl=window._contactLink||('https://t.me/'+(window._botUsername||''));if(tg){tg.openLink(_cl,{try_instant_view:false});}else{window.open(_cl,'_blank');}" style="display:inline-flex;align-items:center;gap:7px;background:var(--surface2);border:1px solid var(--border);color:var(--text2);padding:9px 18px;border-radius:20px;font-size:13px;font-weight:600;cursor:pointer;">
+    <button onclick="var _cl=window._contactLink||('https://t.me/'+(window._botUsername||''));_smartOpenLink(_cl);" style="display:inline-flex;align-items:center;gap:7px;background:var(--surface2);border:1px solid var(--border);color:var(--text2);padding:9px 18px;border-radius:20px;font-size:13px;font-weight:600;cursor:pointer;">
       📩 Contact Support
     </button>
   </div>
@@ -848,6 +852,10 @@ body.ready{transition:none}
     <i class="ti ti-home"></i>
     Home
   </button>
+  <button class="nav-tab" id="navFav" onclick="switchNavTab('fav')">
+    <i class="ti ti-heart"></i>
+    Fav
+  </button>
   <button class="nav-tab" id="navAccess" onclick="switchNavTab('access')">
     <i class="ti ti-key" style="position:relative"></i>
     <span id="accessDot" class="access-dot locked" style="position:relative;display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--red);margin-left:4px;vertical-align:middle"></span>
@@ -861,6 +869,16 @@ body.ready{transition:none}
     <i class="ti ti-disc"></i>
     Earn
   </button>
+</div>
+
+<!-- Fav Page -->
+<div class="page" id="page-fav">
+  <div class="page-header">
+    <div class="page-title"><i class="ti ti-heart" style="color:#ef4444"></i> Favorites</div>
+  </div>
+  <div class="page-body">
+    <div class="batch-grid" id="favBatchGrid"><div class="loading" style="grid-column:1/-1"><i class="ti ti-loader-2"></i>Loading...</div></div>
+  </div>
 </div>
 
 <!-- Refer Page -->
@@ -999,6 +1017,22 @@ body.ready{transition:none}
 
 <script>
 var tg = window.Telegram && window.Telegram.WebApp;
+// Opens ANY link the "right" way: t.me links go through openTelegramLink so
+// Telegram handles them natively (chat/join/share inside the app) instead of
+// bouncing out to the system/external browser first — this was the main cause
+// of "lecture button opens in external browser" on Telegram Desktop, where
+// openLink() always hands t.me URLs off to the OS browser.
+function _smartOpenLink(url, opts) {
+  if (!url) return;
+  var isTgLink = /^https?:\/\/(t|telegram)\.me\//i.test(url);
+  if (tg) {
+    if (isTgLink && tg.openTelegramLink) tg.openTelegramLink(url);
+    else if (tg.openLink) tg.openLink(url, opts || { try_instant_view: false });
+    else window.open(url, '_blank');
+  } else {
+    window.open(url, '_blank');
+  }
+}
 if (tg) {
   tg.ready();
   tg.expand();
@@ -1250,17 +1284,7 @@ function openLink(url, type) {
   }
   // Open link first — THEN close popup after a small delay
   // This prevents the popup close animation from conflicting with app-switch
-  if (tg) {
-    tg.openLink(url, { try_instant_view: false });
-  } else {
-    var a = document.createElement('a');
-    a.href = url;
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  }
+  _smartOpenLink(url);
   showSendingPopup(type);
 }
 
@@ -1338,6 +1362,43 @@ function stopBatchAutoRefresh() {
 // ── Batch Tabs ────────────────────────────────────────────────────────────────
 var _activeBatchTab = 'free'; // 'free' | 'premium'
 
+// ── Favorites ─────────────────────────────────────────────────────────────
+// Stored client-side (localStorage), namespaced per user so a shared device
+// with multiple Telegram accounts doesn't mix up favorite lists.
+var favBatchIds = [];
+function _favStorageKey() { return 'edubot_favs_' + getUserId(); }
+function loadFavs() {
+  try { favBatchIds = JSON.parse(localStorage.getItem(_favStorageKey()) || '[]'); }
+  catch (e) { favBatchIds = []; }
+}
+function isFav(bid) { return favBatchIds.indexOf(bid) !== -1; }
+function toggleFav(bid) {
+  if (isFav(bid)) favBatchIds = favBatchIds.filter(function(id) { return id !== bid; });
+  else favBatchIds.push(bid);
+  try { localStorage.setItem(_favStorageKey(), JSON.stringify(favBatchIds)); } catch (e) {}
+  renderBatches(batches);
+  if (currentTab === 'fav') renderFavPage();
+}
+function renderFavPage() {
+  var favEl = document.getElementById('favBatchGrid');
+  if (!favEl) return;
+  var visible = isAdmin ? batches : batches.filter(function(b) { return b.isPublic === true; });
+  var favBatches = visible.filter(function(b) { return isFav(b._id); });
+  if (!favBatches.length) {
+    favEl.innerHTML = '<div class="empty" style="grid-column:1/-1"><i class="ti ti-heart"></i>No favorites yet<br><span style="font-size:11px">Tap the ♡ on any batch to save it here</span></div>';
+    return;
+  }
+  var curUid = getUserId();
+  favEl.innerHTML = favBatches.map(function(b) {
+    var locked = false;
+    if (b.isPremium && !isAdmin) {
+      var isPermanentOwner = !!(b.premiumUsers && b.premiumUsers.includes(String(curUid)));
+      locked = !isPermanentOwner && !hasBatchRewardAccess(b._id);
+    }
+    return _batchCard(b, locked);
+  }).join('');
+}
+
 function switchBatchTab(tab) {
   _activeBatchTab = tab;
   var freeBtn = document.getElementById('tabFreeBtn');
@@ -1370,6 +1431,8 @@ function _batchCard(b, isPremiumLocked) {
     ? '<div class="premium-lock-overlay"><i class="ti ti-lock" style="font-size:26px;color:#f59e0b"></i></div>' +
       '<div class="premium-locked-msg"><div class="premium-locked-text">🔒 Premium — Access Required</div></div>'
     : '';
+  var favActive = isFav(b._id);
+  var favBtn = '<button class="fav-heart-btn' + (favActive ? ' active' : '') + '" data-bid="' + b._id + '" onclick="event.stopPropagation();toggleFav(this.dataset.bid)"><i class="ti ' + (favActive ? 'ti-heart-filled' : 'ti-heart') + '"></i></button>';
   var cardStyle = (isAdmin && b.isPublic !== true) ? 'opacity:0.6;border-style:dashed;' : '';
   if (b.isPremium) cardStyle += 'border-color:rgba(245,158,11,0.35);';
   var buyBtn = isPremiumLocked
@@ -1399,7 +1462,7 @@ function _batchCard(b, isPremiumLocked) {
   return `<div class="batch-card${b.isPremium ? ' batch-card-premium' : ''}" onclick="openBatch('${b._id}')" style="${cardStyle}">
     <div class="batch-img" style="position:relative;overflow:hidden">
       ${b.pic ? `<img src="${b.pic}">` : '🎓'}
-      ${adminDraftBadge}${premiumBadge}${lockOverlay}
+      ${adminDraftBadge}${premiumBadge}${favBtn}${lockOverlay}
     </div>
     <div class="batch-body">
       <div class="batch-name">${b.name}</div>
@@ -3320,9 +3383,24 @@ function formatCountdown() {
 function switchNavTab(tab) {
   currentTab = tab;
   document.getElementById('navHome').classList.toggle('active', tab === 'home');
+  document.getElementById('navFav').classList.toggle('active', tab === 'fav');
   document.getElementById('navAccess').classList.toggle('active', tab === 'access');
   document.getElementById('navRefer').classList.toggle('active', tab === 'refer');
   document.getElementById('navEarn').classList.toggle('active', tab === 'earn');
+
+  if (tab === 'fav') {
+    document.querySelectorAll('.page').forEach(function(p) {
+      p.style.transition = 'none';
+      p.style.transform = 'translateX(100%)';
+      p.classList.remove('active');
+    });
+    var favEl = document.getElementById('page-fav');
+    favEl.style.transform = '';
+    favEl.classList.add('active');
+    if (tg) tg.BackButton.hide();
+    renderFavPage();
+    return;
+  }
 
   if (tab === 'refer') {
     document.querySelectorAll('.page').forEach(function(p) {
@@ -3769,11 +3847,7 @@ function _escFj(s) {
 }
 
 function fjOpenChannel(link) {
-  if (tg && tg.openLink) {
-    tg.openLink(link, { try_instant_view: false });
-  } else {
-    window.open(link, '_blank');
-  }
+  _smartOpenLink(link);
 }
 
 async function verifyForceJoin() {
@@ -3829,6 +3903,7 @@ function _hideVS(cb){var el=document.getElementById('verifyingScreen');if(!el||e
 
 async function init() {
   initTheme();
+  loadFavs();
   _loadWatchedLectures();
   _animateVsBar();
   await checkAdminAccess();
@@ -4285,8 +4360,7 @@ function handleContact(){
   } else {
     clearTimeout(_contactTimer);
     var _cl = window._contactLink || ('https://t.me/' + (window._botUsername||''));
-    if(tg){tg.openLink(_cl,{try_instant_view:false});}
-    else{window.open(_cl,'_blank');}
+    _smartOpenLink(_cl);
     collapseContact();
   }
 }
@@ -4350,11 +4424,7 @@ function copyReferLink() {
 function shareReferLink() {
   if (!_referLink) return toast('Open via Telegram to get your link', 'error');
   var shareUrl = 'https://t.me/share/url?url=' + encodeURIComponent(_referLink) + '&text=' + encodeURIComponent('Join and access free lectures! 📚');
-  if (tg && tg.openLink) {
-    tg.openLink(shareUrl, { try_instant_view: false });
-  } else {
-    window.open(shareUrl, '_blank');
-  }
+  _smartOpenLink(shareUrl);
 }
 
 // ── Announcements ─────────────────────────────────────────────────────────────
