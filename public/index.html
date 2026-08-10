@@ -193,6 +193,7 @@ body.ready{transition:none}
 .batch-tab{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:9px 12px;border-radius:10px;border:1.5px solid var(--border);background:var(--surface);color:var(--text2);font-size:13px;font-weight:600;cursor:pointer;transition:all 0.18s}
 .batch-tab.active-free{background:rgba(34,197,94,0.1);border-color:var(--green);color:var(--green)}
 .batch-tab.active-premium{background:rgba(245,158,11,0.1);border-color:#f59e0b;color:#f59e0b}
+.batch-tab.active-fav{background:rgba(239,68,68,0.1);border-color:#ef4444;color:#ef4444}
 .batch-tab i{font-size:15px}
 .batch-card-premium{border-color:rgba(245,158,11,0.35) !important}
 .batch-card-premium .batch-meta{color:#f59e0b}
@@ -515,6 +516,9 @@ body.ready{transition:none}
         <button class="batch-tab" id="tabPremiumBtn" onclick="switchBatchTab('premium')">
           <i class="ti ti-crown"></i> Premium
         </button>
+        <button class="batch-tab" id="tabFavBtn" onclick="switchBatchTab('fav')">
+          <i class="ti ti-heart"></i> Fav
+        </button>
       </div>
       <!-- Free Batches -->
       <div id="freeBatchSection">
@@ -523,6 +527,10 @@ body.ready{transition:none}
       <!-- Premium Batches -->
       <div id="premiumBatchSection" style="display:none">
         <div class="batch-grid" id="premiumBatchGrid"></div>
+      </div>
+      <!-- Favorite Batches -->
+      <div id="favBatchSection" style="display:none">
+        <div class="batch-grid" id="favBatchGrid"></div>
       </div>
     </div>
   </div>
@@ -852,10 +860,6 @@ body.ready{transition:none}
     <i class="ti ti-home"></i>
     Home
   </button>
-  <button class="nav-tab" id="navFav" onclick="switchNavTab('fav')">
-    <i class="ti ti-heart"></i>
-    Fav
-  </button>
   <button class="nav-tab" id="navAccess" onclick="switchNavTab('access')">
     <i class="ti ti-key" style="position:relative"></i>
     <span id="accessDot" class="access-dot locked" style="position:relative;display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--red);margin-left:4px;vertical-align:middle"></span>
@@ -869,16 +873,6 @@ body.ready{transition:none}
     <i class="ti ti-disc"></i>
     Earn
   </button>
-</div>
-
-<!-- Fav Page -->
-<div class="page" id="page-fav">
-  <div class="page-header">
-    <div class="page-title"><i class="ti ti-heart" style="color:#ef4444"></i> Favorites</div>
-  </div>
-  <div class="page-body">
-    <div class="batch-grid" id="favBatchGrid"><div class="loading" style="grid-column:1/-1"><i class="ti ti-loader-2"></i>Loading...</div></div>
-  </div>
 </div>
 
 <!-- Refer Page -->
@@ -1379,7 +1373,6 @@ function toggleFav(bid) {
   else favBatchIds.push(bid);
   try { localStorage.setItem(_favStorageKey(), JSON.stringify(favBatchIds)); } catch (e) {}
   renderBatches(batches);
-  if (currentTab === 'fav') renderFavPage();
 }
 function renderFavPage() {
   var favEl = document.getElementById('favBatchGrid');
@@ -1405,20 +1398,19 @@ function switchBatchTab(tab) {
   _activeBatchTab = tab;
   var freeBtn = document.getElementById('tabFreeBtn');
   var premBtn = document.getElementById('tabPremiumBtn');
+  var favBtn = document.getElementById('tabFavBtn');
   var freeSec = document.getElementById('freeBatchSection');
   var premSec = document.getElementById('premiumBatchSection');
+  var favSec = document.getElementById('favBatchSection');
 
-  if (tab === 'free') {
-    freeBtn.className = 'batch-tab active-free';
-    premBtn.className = 'batch-tab';
-    freeSec.style.display = '';
-    premSec.style.display = 'none';
-  } else {
-    freeBtn.className = 'batch-tab';
-    premBtn.className = 'batch-tab active-premium';
-    freeSec.style.display = 'none';
-    premSec.style.display = '';
-  }
+  freeBtn.className = 'batch-tab' + (tab === 'free' ? ' active-free' : '');
+  premBtn.className = 'batch-tab' + (tab === 'premium' ? ' active-premium' : '');
+  favBtn.className = 'batch-tab' + (tab === 'fav' ? ' active-fav' : '');
+  freeSec.style.display = tab === 'free' ? '' : 'none';
+  premSec.style.display = tab === 'premium' ? '' : 'none';
+  favSec.style.display = tab === 'fav' ? '' : 'none';
+
+  if (tab === 'fav') renderFavPage();
 }
 
 function _batchCard(b, isPremiumLocked) {
@@ -1515,6 +1507,9 @@ function renderBatches(list) {
   } else if (premEl) {
     premEl.innerHTML = '<div class="empty" style="grid-column:1/-1"><i class="ti ti-crown"></i>No premium batches yet</div>';
   }
+
+  // Fav section — keep it in sync whenever batches reload/refresh
+  renderFavPage();
 }
 
 function handleSearch(q) {
@@ -3385,24 +3380,9 @@ function formatCountdown() {
 function switchNavTab(tab) {
   currentTab = tab;
   document.getElementById('navHome').classList.toggle('active', tab === 'home');
-  document.getElementById('navFav').classList.toggle('active', tab === 'fav');
   document.getElementById('navAccess').classList.toggle('active', tab === 'access');
   document.getElementById('navRefer').classList.toggle('active', tab === 'refer');
   document.getElementById('navEarn').classList.toggle('active', tab === 'earn');
-
-  if (tab === 'fav') {
-    document.querySelectorAll('.page').forEach(function(p) {
-      p.style.transition = 'none';
-      p.style.transform = 'translateX(100%)';
-      p.classList.remove('active');
-    });
-    var favEl = document.getElementById('page-fav');
-    favEl.style.transform = '';
-    favEl.classList.add('active');
-    if (tg) tg.BackButton.hide();
-    renderFavPage();
-    return;
-  }
 
   if (tab === 'refer') {
     document.querySelectorAll('.page').forEach(function(p) {
