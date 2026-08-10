@@ -211,8 +211,8 @@ body.ready{transition:none}
 .demo-modal-close{background:var(--surface2);border:none;color:var(--text2);width:30px;height:30px;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px}
 .demo-badge{display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:2px 7px;letter-spacing:0.3px}
 .premium-lock-overlay{position:absolute;inset:0;background:rgba(10,14,26,0.55);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;z-index:5;border-radius:0}
-.premium-badge{position:absolute;top:38px;right:6px;background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;font-size:9px;font-weight:800;padding:3px 7px;border-radius:20px;letter-spacing:0.5px;z-index:6;display:flex;align-items:center;gap:3px}
-.fav-heart-btn{position:absolute;top:6px;right:6px;width:28px;height:28px;border-radius:50%;background:rgba(10,14,26,0.55);backdrop-filter:blur(2px);border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:7;transition:transform 0.15s;-webkit-tap-highlight-color:transparent;padding:0}
+.premium-badge{position:absolute;top:6px;right:6px;background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;font-size:9px;font-weight:800;padding:3px 7px;border-radius:20px;letter-spacing:0.5px;z-index:6;display:flex;align-items:center;gap:3px}
+.fav-heart-btn{position:absolute;top:6px;left:6px;width:28px;height:28px;border-radius:50%;background:rgba(10,14,26,0.55);backdrop-filter:blur(2px);border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:7;transition:transform 0.15s;-webkit-tap-highlight-color:transparent;padding:0}
 .fav-heart-btn:active{transform:scale(0.85)}
 .fav-heart-btn i{font-size:15px;color:#fff;transition:color 0.15s}
 .fav-heart-btn.active i{color:#ef4444}
@@ -1416,7 +1416,7 @@ function switchBatchTab(tab) {
 function _batchCard(b, isPremiumLocked) {
   // isPremiumLocked = user does not have access to this premium batch
   var adminDraftBadge = (isAdmin && b.isPublic !== true)
-    ? '<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,0.7);border-radius:6px;padding:3px 7px;font-size:10px;font-weight:700;color:#aaa;display:flex;align-items:center;gap:4px"><i class="ti ti-lock" style="font-size:10px"></i>Private</div>'
+    ? '<div style="position:absolute;top:38px;left:6px;background:rgba(0,0,0,0.7);border-radius:6px;padding:3px 7px;font-size:10px;font-weight:700;color:#aaa;display:flex;align-items:center;gap:4px"><i class="ti ti-lock" style="font-size:10px"></i>Private</div>'
     : '';
   var premiumBadge = b.isPremium
     ? '<div class="premium-badge"><i class="ti ti-crown" style="font-size:9px"></i>PREMIUM</div>'
