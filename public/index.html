@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>EduBot</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script src='//libtl.com/sdk.js' data-zone='11011844' data-sdk='show_11011844'></script>
+<script src='//libtl.com/sdk.js' data-zone='11544166' data-sdk='show_11544166'></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css">
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
@@ -1929,7 +1929,7 @@ async function startSpin() {
     return;
   }
 
-  if (typeof show_11011844 === 'undefined') {
+  if (typeof show_11544166 === 'undefined') {
     _spinToken = null;
     toast('Ad load nahi hua. Ad blocker band karo aur try karo.', 'error');
     _spinInProgress = false;
@@ -1939,9 +1939,9 @@ async function startSpin() {
 
   var tgUid = tg && tg.initDataUnsafe && tg.initDataUnsafe.user ? String(tg.initDataUnsafe.user.id) : 'unknown';
   var adPromise;
-  if (format === 'pop') adPromise = show_11011844('pop');
-  else if (format === 'interstitial') adPromise = show_11011844();
-  else adPromise = show_11011844({ ymid: tgUid });
+  if (format === 'pop') adPromise = show_11544166('pop');
+  else if (format === 'interstitial') adPromise = show_11544166();
+  else adPromise = show_11544166({ ymid: tgUid });
 
   try {
     await adPromise;
@@ -3564,7 +3564,7 @@ async function watchAd() {
 
   _adActuallyShown = false;
 
-  if (typeof show_11011844 === 'undefined') {
+  if (typeof show_11544166 === 'undefined') {
     _adToken = null;
     toast('Ad load nahi hua. Ad blocker band karo aur try karo.', 'error');
     _adWatching = false;
@@ -3577,11 +3577,11 @@ async function watchAd() {
   // Pick Monetag ad format
   var adPromise;
   if (format === 'pop') {
-    adPromise = show_11011844('pop');          // Rewarded Popup
+    adPromise = show_11544166('pop');          // Rewarded Popup
   } else if (format === 'interstitial') {
-    adPromise = show_11011844();               // Rewarded Interstitial
+    adPromise = show_11544166();               // Rewarded Interstitial
   } else {
-    adPromise = show_11011844({ ymid: uid }); // Original Rewarded
+    adPromise = show_11544166({ ymid: uid }); // Original Rewarded
   }
 
   adPromise
@@ -3669,7 +3669,13 @@ openBatch = function(bid) {
       toast('🔒 Yeh premium batch hai! Points se redeem karo ya admin se access maango.', 'error');
       return;
     }
-    // Access granted (permanent or reward) — ads not required, open directly
+    // Premium ownership only unlocks THIS batch — the general watch-ad access
+    // pass is still required on top of it, same as everyone else.
+    if (!hasAccess()) {
+      toast('Watch an ad to unlock access!', 'error');
+      switchNavTab('access');
+      return;
+    }
     _origOpenBatch(bid);
     return;
   }
