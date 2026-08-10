@@ -102,6 +102,27 @@ function listManageableOwners() {
 }
 function isGroupChat(msg) { return msg.chat && (msg.chat.type === "group" || msg.chat.type === "supergroup"); }
 
+// ── Global forward-restriction settings (persisted to disk) ─────────────────
+// Lets an owner turn PDF forward/save restriction on or off at any time via
+// /pdfforward — independent of the per-owner forwardBypass power, which still
+// lets bypass-enabled owners forward restricted files regardless of this switch.
+const SETTINGS_FILE = path.join(__dirname, "data", "settings.json");
+function loadSettings() {
+  try {
+    if (!fs.existsSync(SETTINGS_FILE)) return {};
+    const obj = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"));
+    return (obj && typeof obj === "object" && !Array.isArray(obj)) ? obj : {};
+  } catch (e) { console.warn("Could not read data/settings.json, starting fresh:", e.message); return {}; }
+}
+function saveSettings() {
+  try {
+    fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
+  } catch (e) { console.error("Could not save data/settings.json:", e.message); }
+}
+const settings = loadSettings();
+if (typeof settings.pdfForwardRestrict !== "boolean") settings.pdfForwardRestrict = true; // restricted by default
+
 // ── MongoDB Schemas (for backup writes only) ──────────────────────────────────
 const fileSchema = new mongoose.Schema({ code: { type: String, required: true, unique: true }, file_id: { type: String, required: true }, file_type: { type: String, required: true }, file_name: { type: String, default: "file" }, uploaded_by: Number, expires_at: { type: Date, default: null }, delivered_to: [Number], delivered_at: { type: String, default: '{}' }, created_at: { type: Date, default: Date.now }, channel_msg_id: { type: Number, default: null } });
 const FileRecord = mongoose.model("FileRecord", fileSchema);
@@ -194,12 +215,18 @@ async function saveToStorageChannel(bot, fileInfo) {
   } catch (err) { console.error("saveToStorageChannel failed:", err.message); return fileInfo; }
 }
 
+function isPdfRecord(record) {
+  return record.file_type === "document" && /\.pdf$/i.test(record.file_name || "");
+}
+
 async function sendFile(bot, chatId, record) {
   const caption = `📎 ${record.file_name}`;
-  // Forward-restriction (protect_content) should only apply to videos — other file types
-  // (photo, audio, voice, document) must stay freely forwardable even for non-owners.
+  // Forward-restriction (protect_content) should only apply to videos and PDFs — other
+  // file types (photo, audio, voice, non-PDF document) must stay freely forwardable
+  // even for non-owners.
   const isVideoType = record.file_type === "video" || record.file_type === "video_note";
-  const protect = isVideoType && !hasPerm(chatId, "forwardBypass");
+  const isRestrictedType = isVideoType || (isPdfRecord(record) && settings.pdfForwardRestrict);
+  const protect = isRestrictedType && !hasPerm(chatId, "forwardBypass");
   try {
     switch(record.file_type) {
       case "photo":      return await bot.sendPhoto(chatId, record.file_id, { caption, protect_content: protect });
@@ -517,7 +544,7 @@ async function startBot() {
     const referLink = userId ? `https://t.me/${BOT_USERNAME}?start=ref_${userId}` : "";
     const referLinkCode = referLink ? `<code>${referLink}</code>` : "";
     const welcomeText = isOwner(userId)
-      ? `👋 Hello Admin!\n\nTap below to browse lectures! 📚\n\n📁 File Store:\n/bulk — bulk upload\n/myfiles — view files\n/delete &lt;code&gt; — delete file\n/rmword 'word' — remove word from names\n/cancel — cancel bulk\n\n📡 Broadcast:\n/broadcast &lt;text&gt; or reply to media${isSuperOwner(userId) ? `\n\n👑 Owner Management (super owner only):\n/addowner &lt;user_id&gt; — grant owner access\n/removeowner &lt;user_id&gt; — revoke owner access\n/owners — open the power-control catalog (toggle forward-bypass, admin panel, broadcast per owner)` : ``}\n\n🔗 <b>Your Invite Link:</b> (tap to copy)\n${referLinkCode}`
+      ? `👋 Hello Admin!\n\nTap below to browse lectures! 📚\n\n📁 File Store:\n/bulk — bulk upload\n/myfiles — view files\n/delete &lt;code&gt; — delete file\n/rmword 'word' — remove word from names\n/pdfforward on|off — allow/restrict PDF forwarding\n/cancel — cancel bulk\n\n📡 Broadcast:\n/broadcast &lt;text&gt; or reply to media${isSuperOwner(userId) ? `\n\n👑 Owner Management (super owner only):\n/addowner &lt;user_id&gt; — grant owner access\n/removeowner &lt;user_id&gt; — revoke owner access\n/owners — open the power-control catalog (toggle forward-bypass, admin panel, broadcast per owner)` : ``}\n\n🔗 <b>Your Invite Link:</b> (tap to copy)\n${referLinkCode}`
       : `👋 Hello ${msg.from.first_name}!\n\nTap below to browse all lectures! 📚\n\n🔗 <b>Your Invite Link:</b> (tap to copy)\n${referLinkCode}\n\nShare karo aur har referral pe <b>5 points</b> kamao! 🎁`;
     const shareUrl = referLink ? `https://t.me/share/url?url=${encodeURIComponent(referLink)}&text=${encodeURIComponent("Join and get free lectures! 📚")}` : "";
     const startButtons = [[{ text:"📚 Browse Lectures", web_app:{ url:WEB_URL } }]];
@@ -758,6 +785,18 @@ async function startBot() {
       DailyVideoLimit.findOneAndUpdate({ userId: targetId }, { userId: targetId, count: 0, resetDate: today }, { upsert: true }).catch(()=>{});
       bot.sendMessage(chatId,`✅ Daily video limit reset for user <code>${targetId}</code>.`, { parse_mode:"HTML" });
     } catch(_){ bot.sendMessage(chatId,`Reset failed.`); }
+  });
+
+  // ── /pdfforward ───────────────────────────────────────────────────────────
+  // Owner-only: toggle whether PDFs get forward/save protection (protect_content),
+  // same switch idea as the video restriction but adjustable at any time instead
+  // of being hardcoded. Persisted to data/settings.json so it survives restarts.
+  bot.onText(/\/pdfforward(?:\s+(\S+))?/, async (msg,match) => {
+    if(isGroupChat(msg)||!isOwner(msg.from?.id)) return;
+    const chatId=msg.chat.id; const arg=(match[1]||"").trim().toLowerCase();
+    if(arg==="on"||arg==="restrict"||arg==="enable"){ settings.pdfForwardRestrict=true; saveSettings(); return bot.sendMessage(chatId,`🔒 PDF forwarding is now <b>restricted</b>.`,{parse_mode:"HTML"}); }
+    if(arg==="off"||arg==="allow"||arg==="disable"){ settings.pdfForwardRestrict=false; saveSettings(); return bot.sendMessage(chatId,`🔓 PDF forwarding is now <b>allowed</b>.`,{parse_mode:"HTML"}); }
+    return bot.sendMessage(chatId,`Current: PDFs are <b>${settings.pdfForwardRestrict?"restricted 🔒":"allowed 🔓"}</b> from forwarding.\n\nUsage: /pdfforward on (restrict) | /pdfforward off (allow)`,{parse_mode:"HTML"});
   });
 
   // ── /rmword ───────────────────────────────────────────────────────────────
